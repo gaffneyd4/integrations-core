@@ -2,6 +2,7 @@
 # All rights reserved
 # Licensed under Simplified BSD License (see LICENSE)
 import re
+import select
 import time
 from collections import Counter
 from concurrent.futures.thread import ThreadPoolExecutor
@@ -35,7 +36,6 @@ SAMPLE_QUERIES = [
     ),
     ("dd_admin", "dd_admin", "dogs", "SELECT * FROM breed WHERE name = %s", "Labrador"),
 ]
-
 
 dbm_enabled_keys = ["dbm", "deep_database_monitoring"]
 
@@ -244,6 +244,7 @@ def dbm_instance(pg_instance):
     pg_instance['min_collection_interval'] = 1
     pg_instance['pg_stat_activity_view'] = "datadog.pg_stat_activity()"
     pg_instance['query_samples'] = {'enabled': True, 'run_sync': True, 'collection_interval': 1}
+    pg_instance['query_activity'] = {'enabled': True, 'collection_interval': 1}
     pg_instance['query_metrics'] = {'enabled': True, 'run_sync': True, 'collection_interval': 10}
     return pg_instance
 
@@ -414,6 +415,85 @@ def test_statement_samples_collect(
         conn.close()
 
 
+@pytest.mark.parametrize("pg_stat_activity_view", ["pg_stat_activity", "datadog.pg_stat_activity()"])
+@pytest.mark.parametrize(
+    "user,password,dbname,query,arg,expected_out,expected_keys",
+    [
+        (
+            "bob",
+            "bob",
+            "datadog_test",
+            "SELECT city FROM pg_sleep(3), persons WHERE city = %s",
+            "hello",
+            {
+                'datname': 'datadog_test',
+                'usename': 'bob',
+                'wait_event_type': 'Timeout',
+                'wait_event': 'PgSleep',
+                'state': 'active',
+                'query': "d9193c18a6f372d8",
+            },
+            ["xact_start", "query_start", "pid", "client_port", "client_addr"],
+        ),
+    ],
+)
+def test_activity_samples_collection(
+    aggregator,
+    integration_check,
+    dbm_instance,
+    pg_stat_activity_view,
+    user,
+    password,
+    dbname,
+    query,
+    arg,
+    expected_out,
+    expected_keys,
+):
+    dbm_instance['pg_stat_activity_view'] = pg_stat_activity_view
+    check = integration_check(dbm_instance)
+    check._connect()
+
+    # Run a query in async mode so the test will catch it as its executing.
+    conn = psycopg2.connect(host=HOST, dbname=dbname, user=user, password=password, async_=True)
+
+    def wait(conn):
+        while 1:
+            state = conn.poll()
+            if state == psycopg2.extensions.POLL_OK:
+                break
+            elif state == psycopg2.extensions.POLL_WRITE:
+                select.select([], [conn.fileno()], [])
+            elif state == psycopg2.extensions.POLL_READ:
+                select.select([conn.fileno()], [], [])
+            else:
+                raise psycopg2.OperationalError("poll() returned %s" % state)
+
+    # we are able to see the full query (including the raw parameters) in pg_stat_activity because psycopg2 uses
+    # the simple query protocol, sending the whole query as a plain string to postgres.
+    # if a client is using the extended query protocol with prepare then the query would appear as
+    # leave connection open until after the check has run to ensure we're able to see the query in
+    # pg_stat_activity
+    try:
+        wait(conn)
+        conn.cursor().execute(query, (arg,))
+        check.check(dbm_instance)
+        dbm_active_event = aggregator.get_event_platform_events("dbm-activity")
+
+        event = dbm_active_event[0]
+        assert event['host'] == "stubbed.hostname"
+        assert event['ddsource'] == "postgres"
+        assert len(event['active_queries']) > 0
+        active_query_json = json.loads(event['active_queries'][0])
+        for key in expected_out:
+            assert expected_out[key] == active_query_json[key]
+        for val in expected_keys:
+            assert val in active_query_json
+
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("dbstrict", [True, False])
 def test_statement_samples_dbstrict(aggregator, integration_check, dbm_instance, dbstrict):
     dbm_instance["dbstrict"] = dbstrict
@@ -482,7 +562,7 @@ def test_load_query_max_text_size(aggregator, integration_check, dbm_instance, d
         assert len(aggregator.metrics("dd.postgres.error")) == 0
 
 
-def test_statement_samples_main_collection_rate_limit(aggregator, integration_check, dbm_instance, bob_conn):
+def test_statement_samples_main_collection_rate_limit(aggregator, integration_check, dbm_instance):
     # test the main collection loop rate limit
     collection_interval = 0.1
     dbm_instance['query_samples']['collection_interval'] = collection_interval
