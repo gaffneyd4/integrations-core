@@ -428,8 +428,6 @@ def test_statement_samples_collect(
             {
                 'datname': 'datadog_test',
                 'usename': 'bob',
-                'wait_event_type': 'Timeout',
-                'wait_event': 'PgSleep',
                 'state': 'active',
                 'query': "d9193c18a6f372d8",
             },
@@ -478,13 +476,25 @@ def test_activity_samples_collection(
         wait(conn)
         conn.cursor().execute(query, (arg,))
         check.check(dbm_instance)
-        dbm_active_event = aggregator.get_event_platform_events("dbm-activity")
+        dbm_activity_event = aggregator.get_event_platform_events("dbm-activity")
 
-        event = dbm_active_event[0]
+        if POSTGRES_VERSION.split('.')[0] == "9" and pg_stat_activity_view == "pg_stat_activity":
+            # cannot catch any queries from other users
+            # only can see own queries
+            return
+
+        event = dbm_activity_event[0]
         assert event['host'] == "stubbed.hostname"
         assert event['ddsource'] == "postgres"
         assert len(event['active_queries']) > 0
-        active_query_json = json.loads(event['active_queries'][0])
+        # find bob's query.
+        bobs_query = None
+        for query_json in event['active_queries']:
+            if "bob" in query_json:
+                bobs_query = query_json
+        assert bobs_query is not None
+
+        active_query_json = json.loads(bobs_query)
         for key in expected_out:
             assert expected_out[key] == active_query_json[key]
         for val in expected_keys:
