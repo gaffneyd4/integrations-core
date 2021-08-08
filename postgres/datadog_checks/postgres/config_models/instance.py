@@ -20,6 +20,14 @@ class ObfuscatorOptions(BaseModel):
     quantize_sql_tables: Optional[bool]
 
 
+class QueryActivity(BaseModel):
+    class Config:
+        allow_mutation = False
+
+    collection_interval: Optional[float]
+    enabled: Optional[bool]
+
+
 class QueryMetrics(BaseModel):
     class Config:
         allow_mutation = False
@@ -75,6 +83,7 @@ class InstanceConfig(BaseModel):
     password: Optional[str]
     pg_stat_statements_view: Optional[str]
     port: Optional[int]
+    query_activity: Optional[QueryActivity]
     query_metrics: Optional[QueryMetrics]
     query_samples: Optional[QuerySamples]
     query_timeout: Optional[int]
