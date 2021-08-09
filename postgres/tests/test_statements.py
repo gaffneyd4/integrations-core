@@ -500,6 +500,13 @@ def test_activity_samples_collection(
         for val in expected_keys:
             assert val in active_query_json
 
+        expected_tags = dbm_instance['tags'] + [
+            'server:{}'.format(HOST),
+            'port:{}'.format(PORT),
+        ]
+
+        assert event['ddtags'] == expected_tags
+
     finally:
         conn.close()
 
