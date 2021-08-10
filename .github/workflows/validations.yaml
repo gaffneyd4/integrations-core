@@ -34,3 +34,7 @@ jobs:
     - name: Run configuration validation
       run: |
         ddev validate config
+
+    - name: Run legacy signature validation
+      run: |
+        ddev validate legacy-signature
