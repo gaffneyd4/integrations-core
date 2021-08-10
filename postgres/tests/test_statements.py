@@ -429,7 +429,7 @@ def test_statement_samples_collect(
                 'datname': 'datadog_test',
                 'usename': 'bob',
                 'state': 'active',
-                'query': "d9193c18a6f372d8",
+                'query_signature': "d9193c18a6f372d8",
             },
             ["xact_start", "query_start", "pid", "client_port", "client_addr"],
         ),
@@ -499,6 +499,8 @@ def test_activity_samples_collection(
             assert expected_out[key] == active_query_json[key]
         for val in expected_keys:
             assert val in active_query_json
+
+        assert 'query' not in active_query_json
 
         expected_tags = dbm_instance['tags'] + [
             'server:{}'.format(HOST),
